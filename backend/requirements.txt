@@ -1,0 +1,13 @@
+# Python 3.10 on purpose: Spark Connect runs Python UDFs in workers on the server, and the
+# apache/spark 4.2.0 image ships Python 3.10. Client and server minor versions must match.
+fastapi==0.159.0
+uvicorn[standard]==0.54.0
+pyspark[connect]==4.2.0
+mlflow==3.17.2
+databricks-sdk==0.155.0
+scikit-learn==1.7.2
+pandas==2.3.3
+numpy==2.2.6
+pyarrow==25.0.1
+requests==2.34.2
+pyyaml==6.0.3

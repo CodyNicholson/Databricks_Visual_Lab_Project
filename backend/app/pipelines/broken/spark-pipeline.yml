@@ -1,0 +1,7 @@
+name: broken_pipeline
+libraries:
+  - glob:
+      include: transformations/**
+storage: file:///lakehouse/pipelines/broken/storage
+catalog: main
+database: sdp_broken

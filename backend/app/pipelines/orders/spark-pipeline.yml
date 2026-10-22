@@ -1,0 +1,9 @@
+# A Spark Declarative Pipeline (the open-source core of Lakeflow Declarative Pipelines, formerly DLT).
+# Run with: spark-pipelines run --spec orders/spark-pipeline.yml --remote sc://spark:15002
+name: orders_pipeline
+libraries:
+  - glob:
+      include: transformations/**
+storage: file:///lakehouse/pipelines/orders/storage
+catalog: main
+database: sdp

@@ -1,0 +1,7 @@
+name: autocdc_pipeline
+libraries:
+  - glob:
+      include: transformations/**
+storage: file:///lakehouse/pipelines/autocdc/storage
+catalog: main
+database: sdp_cdc

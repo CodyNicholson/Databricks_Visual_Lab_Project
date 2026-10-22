@@ -1,0 +1,146 @@
+# Secrets come from the git-ignored .env file next to this one (Compose reads it for ${…}
+# interpolation). Only the variables listed under `environment` reach a container.
+#
+# Databricks itself is a paid cloud platform and cannot run in a container. The lab runs the
+# open-source engines Databricks is built on, for real: Spark (Connect), Delta Lake, Unity
+# Catalog OSS, MLflow and Spark Declarative Pipelines. They share one /lakehouse volume, the
+# lab's stand-in for cloud object storage.
+services:
+  # Unity Catalog OSS 0.7: the same /api/2.1/unity-catalog REST API Databricks serves.
+  unitycatalog:
+    image: unitycatalog/unitycatalog:v0.7.0
+    container_name: databricks-lab-unitycatalog
+    # umask 0000: the server (uid 100) and Spark (uid 185) both create folders on /lakehouse
+    command: ["sh", "-c", "umask 0000 && exec ./bin/start-uc-server"]
+    volumes:
+      - ./unitycatalog/server.properties:/home/unitycatalog/etc/conf/server.properties:ro
+      - uc-db:/home/unitycatalog/etc/db
+      - lakehouse:/lakehouse
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xmx512m"
+    mem_limit: 1g
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/api/2.1/unity-catalog/catalogs >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 20s
+
+  # The "cluster": Spark 4.2 Connect server with Delta Lake 4.4 and the Unity Catalog connector.
+  spark:
+    build: ./spark
+    image: databricks-lab-spark:4.2.0
+    container_name: databricks-lab-spark
+    volumes:
+      - lakehouse:/lakehouse
+    mem_limit: 3g
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      unitycatalog:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/15002'"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 20s
+
+  # MLflow 3 tracking server (experiments, runs, metrics, artifacts). Models register in UC.
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v3.17.2
+    container_name: databricks-lab-mlflow
+    command: >
+      mlflow server --host 0.0.0.0 --port 5000 --workers 1
+      --backend-store-uri sqlite:////mlflow/mlflow.db
+      --serve-artifacts --artifacts-destination /mlflow/artifacts
+      --allowed-hosts mlflow,mlflow:5000,localhost,localhost:5000
+    volumes:
+      - mlflow-data:/mlflow
+      - lakehouse:/lakehouse
+    environment:
+      MLFLOW_TELEMETRY_DISABLED: "true"
+      # The server's background job workers (GenAI scorers, ~200 MB each) are not used here
+      MLFLOW_SERVER_ENABLE_JOB_EXECUTION: "false"
+      DO_NOT_TRACK: "true"
+    mem_limit: 1g
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health')\""]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 15s
+
+  backend:
+    build:
+      context: ./backend
+      target: runtime
+    container_name: databricks-lab-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - lakehouse:/lakehouse
+    environment:
+      SPARK_REMOTE: sc://spark:15002
+      SPARK_UI_URL: http://spark:4040
+      UC_URL: http://unitycatalog:8080
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      # Fail a demo in seconds, not minutes, if the tracking server is down
+      MLFLOW_HTTP_REQUEST_MAX_RETRIES: "2"
+      MLFLOW_HTTP_REQUEST_TIMEOUT: "30"
+      # Optional live Databricks workspace for the SDK demo (offline when empty)
+      DATABRICKS_HOST: ${DATABRICKS_HOST:-}
+      DATABRICKS_TOKEN: ${DATABRICKS_TOKEN:-}
+      LIVE_RUNS_PER_MINUTE: ${LIVE_RUNS_PER_MINUTE:-5}
+      LIVE_RUNS_PER_HOUR: ${LIVE_RUNS_PER_HOUR:-60}
+    mem_limit: 2g
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      spark:
+        condition: service_healthy
+      unitycatalog:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  # Production build served by nginx on :80. The container name and tunnel-net match the
+  # Cloudflare tunnel route (http://rixus-frontend:80), so pipeline-run.sh can publish it.
+  frontend:
+    build:
+      context: ./frontend
+      target: runtime
+    container_name: rixus-frontend
+    ports:
+      - "3000:80"
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - default
+      - tunnel-net
+    depends_on:
+      - backend
+
+volumes:
+  lakehouse:
+  uc-db:
+  mlflow-data:
+
+networks:
+  tunnel-net:
+    external: true
