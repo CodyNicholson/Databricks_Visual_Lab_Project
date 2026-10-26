@@ -26,15 +26,15 @@ with it, reproducing most of them for real.
 ## Quick start
 
 ```bash
-docker network create tunnel-net        # once; docker-compose.yml expects it
+docker network create tunnel-net        # once; the compose file joins this external network
 docker compose up -d --build            # first build downloads ~4 GB of images and jars
 open http://localhost:3000              # the backend seeds samples.nyctaxi.trips on startup (~1 min)
 ```
 
 | Service | Container | Port | What it is |
 |---|---|---|---|
-| `frontend` | `rixus-frontend` | 3000 → 80 | React build served by nginx; proxies `/api/` to the backend |
-| `backend` | `databricks-lab-backend` | 8000 | FastAPI + PySpark Connect client, MLflow client, Databricks SDK |
+| `frontend` | – | 127.0.0.1:3000 → 80 | React build served by unprivileged nginx; proxies `/api/` to the backend |
+| `backend` | `databricks-lab-backend` | 127.0.0.1:8000 | FastAPI + PySpark Connect client, MLflow client, Databricks SDK |
 | `spark` | `databricks-lab-spark` | (15002, 4040 internal) | Spark 4.2 Connect server, `local[4]`, Delta 4.4.1 + UC connector |
 | `unitycatalog` | `databricks-lab-unitycatalog` | (8080 internal) | Unity Catalog OSS 0.7.0 REST server (H2 metadata in volume `uc-db`) |
 | `mlflow` | `databricks-lab-mlflow` | (5000 internal) | MLflow 3.17.2 tracking server (SQLite + artifacts in volume `mlflow-data`) |
@@ -78,7 +78,7 @@ Memory caps: Spark 3 GB, backend 2 GB, UC 1 GB, MLflow 1 GB.
 ## Architecture
 
 ```
- Browser ──HTTP──▶ rixus-frontend (nginx :80) ──/api/──▶ backend (FastAPI :8000)
+ Browser ──HTTP──▶ frontend (nginx :80)   ──/api/──▶ backend (FastAPI :8000)
                                                           │  PySpark Connect client, MLflow client,
                                                           │  Databricks SDK, spark-pipelines CLI
                      ┌────────────────gRPC :15002─────────┤
@@ -128,7 +128,6 @@ UC 0.7.0, MLflow 3.17.2, databricks-sdk 0.155.0) and is recorded in the demos' r
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `TUNNEL_TOKEN` | – | Cloudflare tunnel token; used by `pipeline-run.sh` only if not set globally |
 | `DATABRICKS_HOST`, `DATABRICKS_TOKEN` | empty | Optional real workspace: the SDK demo then also makes read-only calls (current user, list jobs). Offline when empty. |
 | `LIVE_RUNS_PER_MINUTE`, `LIVE_RUNS_PER_HOUR` | 5, 60 | Rate limits for those live calls |
 
@@ -143,7 +142,7 @@ container through `environment:` entries.
 | Backend live tests | `docker compose exec backend python -m pytest -q -m live` | every demo (28) must pass its own checks; every "Do it wrong" mode (20) must verify extra checks |
 | Frontend | `docker build --target test frontend` | Vitest: catalog completeness (pitfalls on every demo), every page and visual renders |
 | In the UI | `#suite` | "Run all demos" calls every demo's `test` request |
-| Isolated stack | `bash ~/.claude/skills/visual-lab/scripts/test-isolated.sh .` then `… . down` | builds a renamed copy on :3900 with no tunnel network and smoke-tests every demo through nginx |
+| Isolated stack | `docker compose -p databricks-lab-test -f docker-compose.yml -f docker-compose.test.yml up -d --build` (then `… down`) | builds a renamed copy on 127.0.0.1:3900 that never touches the live app |
 
 ## Local development
 
@@ -158,12 +157,17 @@ DemoResult contract: `commands`, `data`, `checks`, `elapsedMs`). Pipeline projec
 (`spark-defaults.conf` holds the Delta / UC / single-node settings); UC's config is
 `unitycatalog/server.properties`.
 
-## Deployment
+## Security
 
-`./pipeline-run.sh` (git-ignored) pulls the project, **removes all containers on the host**, starts
-the `cloudflared-tunnel` container on `tunnel-net`, and runs `docker compose up -d --build`. The
-tunnel routes to `http://rixus-frontend:80`, so the frontend container name and the `tunnel-net`
-network must stay as they are. Only one app is live in the tunnel at a time.
+- Host ports are bound to `127.0.0.1` only. Docker publishes ports through its own iptables rules,
+  which bypass host firewalls such as `ufw`, so a bare `3000:80` would be reachable from outside.
+- Unity Catalog, Spark and MLflow sit on the `internal: true` `backend-net` with the backend: no route
+  out, and the public nginx container cannot reach them.
+- nginx runs unprivileged (uid 101) with all capabilities dropped, `no-new-privileges`, and memory,
+  CPU and process limits; the other containers have `no-new-privileges` and memory and process limits.
+- Every response carries `Content-Security-Policy` (same-origin only, no framing),
+  `X-Content-Type-Options`, `Referrer-Policy` and `Permissions-Policy`
+  (`frontend/security-headers.conf`); the nginx version is hidden.
 
 ## Notes and limits
 

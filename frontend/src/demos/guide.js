@@ -68,7 +68,7 @@ trips = spark.read.table("samples.nyctaxi.trips")
       title: 'Or run this lab locally (no account needed)',
       text: 'The same open-source engines on one machine: Spark Connect, Delta Lake, Unity Catalog and MLflow in Docker.',
       commands: [
-        'docker network create tunnel-net   # once',
+        'docker network create tunnel-net   # once; the compose file joins it',
         'docker compose up -d --build',
         'open http://localhost:3000',
       ],

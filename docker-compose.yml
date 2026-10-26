@@ -5,6 +5,8 @@
 # open-source engines Databricks is built on, for real: Spark (Connect), Delta Lake, Unity
 # Catalog OSS, MLflow and Spark Declarative Pipelines. They share one /lakehouse volume, the
 # lab's stand-in for cloud object storage.
+# Host ports are bound to 127.0.0.1: Docker's iptables rules bypass ufw, so a bare "3000:80"
+# be reachable from outside the server.
 services:
   # Unity Catalog OSS 0.7: the same /api/2.1/unity-catalog REST API Databricks serves.
   unitycatalog:
@@ -22,6 +24,9 @@ services:
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
+    pids_limit: 512
+    networks:
+      - backend-net
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/api/2.1/unity-catalog/catalogs >/dev/null"]
       interval: 5s
@@ -40,9 +45,12 @@ services:
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
+    pids_limit: 1024
     depends_on:
       unitycatalog:
         condition: service_healthy
+    networks:
+      - backend-net
     healthcheck:
       test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/15002'"]
       interval: 5s
@@ -71,6 +79,9 @@ services:
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
+    pids_limit: 512
+    networks:
+      - backend-net
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health')\""]
       interval: 5s
@@ -84,7 +95,7 @@ services:
       target: runtime
     container_name: databricks-lab-backend
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - lakehouse:/lakehouse
     environment:
@@ -104,6 +115,9 @@ services:
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
+    pids_limit: 512
+    cap_drop:
+      - ALL
     depends_on:
       spark:
         condition: service_healthy
@@ -111,6 +125,9 @@ services:
         condition: service_healthy
       mlflow:
         condition: service_healthy
+    networks:
+      - default
+      - backend-net
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')\""]
       interval: 10s
@@ -118,18 +135,22 @@ services:
       retries: 30
       start_period: 30s
 
-  # Production build served by nginx on :80. The container name and tunnel-net match the
-  # Cloudflare tunnel route (http://rixus-frontend:80), so pipeline-run.sh can publish it.
+  # Production build served by unprivileged nginx on :80
   frontend:
     build:
       context: ./frontend
       target: runtime
     container_name: rixus-frontend
     ports:
-      - "3000:80"
+      - "127.0.0.1:3000:80"
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 128m
+    cpus: 0.5
+    pids_limit: 100
     networks:
       - default
       - tunnel-net
@@ -142,5 +163,9 @@ volumes:
   mlflow-data:
 
 networks:
+  # Unity Catalog, Spark, MLflow and the backend. internal: no route out and unreachable from
+  # the public nginx container (Spark's packages are baked into its image at build time).
+  backend-net:
+    internal: true
   tunnel-net:
     external: true
